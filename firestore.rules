@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users can read and update only their own profile document.
+    // Never store passwords in Firestore; Firebase Authentication manages credentials.
+    match /users/{userId} {
+      allow create: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.uid == userId
+                    && request.resource.data.email == request.auth.token.email;
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.uid == resource.data.uid
+                    && request.resource.data.email == resource.data.email;
+      allow delete: if false;
+    }
+
+    // Deny all other reads/writes until explicit rules are added for bookings,
+    // subscriptions, barber profiles, and other business data.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

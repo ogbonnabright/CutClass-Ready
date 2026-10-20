@@ -1,0 +1,6 @@
+{
+  "name": "CutClass",
+  "description": "Professional home haircuts, on a schedule that suits you.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
