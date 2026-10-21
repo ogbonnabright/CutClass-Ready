@@ -10,17 +10,26 @@ import {
   type User as FirebaseUser,
 } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { User } from '../types';
+import { User, UserSubscription } from '../types';
 import { auth, db, isFirebaseConfigured } from '../lib/firebase';
+
+interface SignUpData {
+  name: string;
+  email: string;
+  password: string;
+  subscription?: UserSubscription;
+  haircutCredits?: number;
+}
 
 interface AuthContextType {
   user: User | null;
   isPending: boolean;
   signIn: (email: string, password: string) => Promise<{ error?: { message: string } }>;
-  signUp: (data: { name: string; email: string; password: string }) => Promise<{ error?: { message: string } }>;
+  signUp: (data: SignUpData) => Promise<{ error?: { message: string }; user?: User }>;
   signOut: () => Promise<void>;
   sendVerificationEmail: (email: string) => Promise<{ error?: { message: string } }>;
   verifyUserEmail: () => Promise<void>;
+  updateSubscription: (subscription: UserSubscription) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -42,22 +51,13 @@ function friendlyError(error: unknown): string {
 }
 
 async function profileFor(firebaseUser: FirebaseUser): Promise<User> {
-  if (!db) throw new Error('Firebase is not configured. Add your Firebase web app settings to the .env file.');
+  if (!db) throw new Error('Firebase is not configured.');
   const userRef = doc(db, 'users', firebaseUser.uid);
   const snapshot = await getDoc(userRef);
   const existing = snapshot.exists() ? snapshot.data() : {};
-  const name = firebaseUser.displayName || existing.name || firebaseUser.email?.split('@')[0] || 'CutClass user';
+  const name = firebaseUser.displayName || existing.name || firebaseUser.email?.split('@')[0] || 'CutClass member';
   const createdAt = existing.createdAt?.toDate?.()?.toISOString?.() ||
     (typeof existing.createdAt === 'string' ? existing.createdAt : new Date().toISOString());
-
-  await setDoc(userRef, {
-    uid: firebaseUser.uid,
-    name,
-    email: firebaseUser.email || '',
-    emailVerified: firebaseUser.emailVerified,
-    createdAt: existing.createdAt || serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  }, { merge: true });
 
   return {
     id: firebaseUser.uid,
@@ -65,6 +65,8 @@ async function profileFor(firebaseUser: FirebaseUser): Promise<User> {
     email: firebaseUser.email || '',
     emailVerified: firebaseUser.emailVerified,
     createdAt,
+    haircutCredits: existing.haircutCredits ?? 0,
+    subscription: existing.subscription ?? null,
   };
 }
 
@@ -74,6 +76,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     if (!auth || !db) {
+      // Check localStorage for offline / preview testing session if Firebase is unconfigured
+      const localSession = localStorage.getItem('cutclass_local_user');
+      if (localSession) {
+        try {
+          setUser(JSON.parse(localSession));
+        } catch {
+          // ignore error
+        }
+      }
       setIsPending(false);
       return;
     }
@@ -89,10 +100,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('Could not load CutClass account profile:', error);
         setUser({
           id: firebaseUser.uid,
-          name: firebaseUser.displayName || 'CutClass user',
+          name: firebaseUser.displayName || 'CutClass member',
           email: firebaseUser.email || '',
           emailVerified: firebaseUser.emailVerified,
           createdAt: new Date().toISOString(),
+          haircutCredits: 0,
+          subscription: null,
         });
       } finally {
         setIsPending(false);
@@ -101,7 +114,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    if (!isFirebaseConfigured || !auth) return { error: { message: 'Firebase is not configured yet. Follow the setup guide included with this project.' } };
+    if (!isFirebaseConfigured || !auth) {
+      // Mock sign in if unconfigured
+      const localSession = localStorage.getItem('cutclass_local_user');
+      if (localSession) {
+        const parsed = JSON.parse(localSession);
+        if (parsed.email.toLowerCase() === email.trim().toLowerCase()) {
+          setUser(parsed);
+          return {};
+        }
+      }
+      return { error: { message: 'Firebase is not configured yet. Follow the setup guide to enable production authentication.' } };
+    }
     try {
       await signInWithEmailAndPassword(auth, email.trim(), password);
       return {};
@@ -110,30 +134,74 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signUp = async ({ name, email, password }: { name: string; email: string; password: string }) => {
-    if (!isFirebaseConfigured || !auth || !db) return { error: { message: 'Firebase is not configured yet. Add your Firebase web app settings before creating accounts.' } };
+  const signUp = async ({ name, email, password, subscription, haircutCredits }: SignUpData) => {
     if (!name.trim()) return { error: { message: 'Enter your full name.' } };
+    if (!email.trim() || !email.includes('@')) return { error: { message: 'Enter a valid email address.' } };
     if (password.length < 6) return { error: { message: 'Password should be at least 6 characters long.' } };
-    try {
-      const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-      await updateProfile(credential.user, { displayName: name.trim() });
-      await setDoc(doc(db, 'users', credential.user.uid), {
-        uid: credential.user.uid,
-        name: name.trim(),
-        email: credential.user.email,
-        emailVerified: credential.user.emailVerified,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      await sendEmailVerification(credential.user);
-      return {};
-    } catch (error) {
-      return { error: { message: friendlyError(error) } };
+
+    const creditsCount = haircutCredits !== undefined ? haircutCredits : (subscription ? subscription.credits : 0);
+
+    // If Firebase is configured, execute real Firebase Auth & Firestore write
+    if (isFirebaseConfigured && auth && db) {
+      try {
+        const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+        await updateProfile(credential.user, { displayName: name.trim() });
+        
+        const initialDoc: Record<string, unknown> = {
+          uid: credential.user.uid,
+          name: name.trim(),
+          email: credential.user.email,
+          emailVerified: credential.user.emailVerified,
+          haircutCredits: creditsCount,
+          subscription: subscription || null,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+
+        await setDoc(doc(db, 'users', credential.user.uid), initialDoc);
+
+        try {
+          await sendEmailVerification(credential.user);
+        } catch (err) {
+          console.warn('Email verification send issue:', err);
+        }
+
+        const newUser: User = {
+          id: credential.user.uid,
+          name: name.trim(),
+          email: credential.user.email || email.trim(),
+          emailVerified: credential.user.emailVerified,
+          createdAt: new Date().toISOString(),
+          haircutCredits: creditsCount,
+          subscription: subscription || null,
+        };
+        setUser(newUser);
+        return { user: newUser };
+      } catch (error) {
+        return { error: { message: friendlyError(error) } };
+      }
     }
+
+    // Fallback in-memory/localStorage session for preview environment
+    const mockUser: User = {
+      id: 'member_' + Math.random().toString(36).substring(2, 9),
+      name: name.trim(),
+      email: email.trim(),
+      emailVerified: true,
+      createdAt: new Date().toISOString(),
+      haircutCredits: creditsCount,
+      subscription: subscription || null,
+    };
+    setUser(mockUser);
+    localStorage.setItem('cutclass_local_user', JSON.stringify(mockUser));
+    return { user: mockUser };
   };
 
   const signOut = async () => {
-    if (auth) await firebaseSignOut(auth);
+    if (auth) {
+      await firebaseSignOut(auth);
+    }
+    localStorage.removeItem('cutclass_local_user');
     setUser(null);
   };
 
@@ -160,8 +228,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const updateSubscription = async (newSub: UserSubscription) => {
+    if (!user) return;
+    const updatedUser: User = {
+      ...user,
+      haircutCredits: (user.haircutCredits || 0) + newSub.credits,
+      subscription: newSub,
+    };
+    setUser(updatedUser);
+
+    if (isFirebaseConfigured && db && auth?.currentUser) {
+      await setDoc(doc(db, 'users', auth.currentUser.uid), {
+        subscription: newSub,
+        haircutCredits: updatedUser.haircutCredits,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    } else {
+      localStorage.setItem('cutclass_local_user', JSON.stringify(updatedUser));
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, isPending, signIn, signUp, signOut, sendVerificationEmail, verifyUserEmail }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        isPending,
+        signIn,
+        signUp,
+        signOut,
+        sendVerificationEmail,
+        verifyUserEmail,
+        updateSubscription,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

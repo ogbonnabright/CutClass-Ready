@@ -38,7 +38,7 @@ export const plansData: Plan[] = [
     price: '₦35,000',
     priceNum: 35000,
     period: '/ month',
-    description: '4 premium grooming appointments, with beard shaping on request',
+    description: '4 premium grooming appointments, with hair treatment and care',
   },
   {
     id: 'family',

@@ -241,40 +241,95 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                   <h3 className="font-display text-xl font-semibold text-foreground">
                     Subscription and haircut credits
                   </h3>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
-                    Pre-launch
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                      user.subscription
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                        : 'bg-secondary text-muted-foreground'
+                    }`}
+                  >
+                    {user.subscription ? 'Active Membership' : 'Pre-launch'}
                   </span>
                 </div>
                 <p className="text-sm text-muted-foreground mt-0.5">
-                  Only confirmed payments can activate subscription access or credits.
+                  {user.subscription
+                    ? 'Recurring monthly Abuja home haircut membership.'
+                    : 'Only confirmed payments can activate subscription access or credits.'}
                 </p>
               </div>
 
               <div className="grid gap-4 pt-4">
-                <div className="rounded-lg bg-secondary/60 p-3.5 text-xs text-muted-foreground leading-relaxed">
-                  Subscription plans are proposed launch pricing for Abuja, Nigeria. As soon as your address is confirmed with dispatch, credits will be activated on your account.
-                </div>
+                {user.subscription ? (
+                  <>
+                    <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
+                      <span className="text-muted-foreground">Active Plan</span>
+                      <span className="font-bold text-foreground">
+                        {user.subscription.planName} ({user.subscription.price}{user.subscription.period})
+                      </span>
+                    </div>
 
-                <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
-                  <span className="text-muted-foreground">Available haircut credits</span>
-                  <span className="font-semibold tabular-nums text-foreground text-lg">0</span>
-                </div>
+                    <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
+                      <span className="text-muted-foreground">Available haircut credits</span>
+                      <span className="font-semibold tabular-nums text-primary text-xl">
+                        {user.haircutCredits ?? user.subscription.credits}
+                      </span>
+                    </div>
 
-                <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
-                  <span className="text-muted-foreground">Active subscription</span>
-                  <span className="font-medium text-muted-foreground">None yet</span>
-                </div>
+                    <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
+                      <span className="text-muted-foreground">Next billing date</span>
+                      <span className="font-medium text-foreground">
+                        {user.subscription.nextBillingDate}
+                      </span>
+                    </div>
 
-                <div className="pt-2">
-                  <button
-                    type="button"
-                    onClick={() => onOpenInquiry('Pre-order subscription plan')}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary py-2.5 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90 transition-colors cursor-pointer"
-                  >
-                    <Sparkles className="size-4" />
-                    Express interest in monthly plan
-                  </button>
-                </div>
+                    {user.subscription.paymentMethod && (
+                      <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
+                        <span className="text-muted-foreground">Payment method</span>
+                        <span className="font-medium text-foreground uppercase">
+                          {user.subscription.paymentMethod.brand} •••• {user.subscription.paymentMethod.last4}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="pt-2 flex gap-3">
+                      <button
+                        type="button"
+                        onClick={() => onOpenInquiry('Book a haircut with my subscription credits')}
+                        className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-primary py-2.5 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90 transition-colors cursor-pointer"
+                      >
+                        <Scissors className="size-4 -rotate-12" />
+                        Book a haircut
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="rounded-lg bg-secondary/60 p-3.5 text-xs text-muted-foreground leading-relaxed">
+                      Subscription plans are proposed launch pricing for Abuja, Nigeria. As soon as your address is confirmed with dispatch, credits will be activated on your account.
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
+                      <span className="text-muted-foreground">Available haircut credits</span>
+                      <span className="font-semibold tabular-nums text-foreground text-lg">0</span>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
+                      <span className="text-muted-foreground">Active subscription</span>
+                      <span className="font-medium text-muted-foreground">None yet</span>
+                    </div>
+
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('/signup')}
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary py-2.5 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90 transition-colors cursor-pointer"
+                      >
+                        <Sparkles className="size-4" />
+                        Choose a membership plan
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>
