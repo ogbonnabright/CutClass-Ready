@@ -16,7 +16,7 @@ export interface UserSubscription {
   priceNum: number;
   period: string;
   credits: number;
-  status: 'active' | 'trialing' | 'past_due' | 'canceled';
+  status: 'active' | 'trialing' | 'past_due' | 'canceled' | 'expired';
   activatedAt: string;
   nextBillingDate: string;
   paymentMethod?: PaymentMethodSummary;

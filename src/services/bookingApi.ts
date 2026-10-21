@@ -7,6 +7,7 @@ import {
   ServiceItem,
   UserSubscription,
 } from '../types';
+import { auth } from '../lib/firebase';
 
 export interface BookingPayload {
   memberId: string;
@@ -28,6 +29,36 @@ export interface BookingPayload {
   paymentStatus?: 'covered_by_plan' | 'paid' | 'pending';
   paymentReference?: string;
   notes?: string;
+}
+
+async function getAuthHeaders(extraHeaders: Record<string, string> = {}): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...extraHeaders,
+  };
+
+  try {
+    if (auth?.currentUser) {
+      const token = await auth.currentUser.getIdToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+        return headers;
+      }
+    }
+  } catch (err) {
+    console.warn('[API Client] Could not acquire Firebase ID token:', err);
+  }
+
+  // Preview / Development fallback session
+  try {
+    const local = localStorage.getItem('cutclass_local_user');
+    if (local) {
+      const parsed = JSON.parse(local);
+      headers['Authorization'] = `Bearer test-token-${parsed.id || parsed.role || 'member'}`;
+    }
+  } catch {}
+
+  return headers;
 }
 
 export const bookingApi = {
@@ -62,9 +93,10 @@ export const bookingApi = {
     updatedCredits: number;
     bookingRef: string;
   }> {
+    const headers = await getAuthHeaders();
     const res = await fetch('/api/bookings', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     });
     const data = await res.json();
@@ -84,9 +116,10 @@ export const bookingApi = {
     hoursRemaining: string;
     message: string;
   }> {
+    const headers = await getAuthHeaders();
     const res = await fetch(`/api/bookings/${id}/cancel`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ memberId, reason }),
     });
     const data = await res.json();
@@ -100,9 +133,10 @@ export const bookingApi = {
     newTime: string,
     memberId: string
   ): Promise<{ appointment: Appointment; message: string }> {
+    const headers = await getAuthHeaders();
     const res = await fetch(`/api/bookings/${id}/reschedule`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ newDate, newTime, memberId }),
     });
     const data = await res.json();
@@ -119,7 +153,10 @@ export const bookingApi = {
     };
     transactions: CreditTransaction[];
   }> {
-    const res = await fetch(`/api/member/dashboard-data?memberId=${encodeURIComponent(memberId)}`);
+    const headers = await getAuthHeaders();
+    const res = await fetch(`/api/member/dashboard-data?memberId=${encodeURIComponent(memberId)}`, {
+      headers,
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to load member dashboard.');
     return data;
@@ -134,7 +171,10 @@ export const bookingApi = {
       all: Appointment[];
     };
   }> {
-    const res = await fetch(`/api/barber/dashboard-data?barberId=${encodeURIComponent(barberId)}`);
+    const headers = await getAuthHeaders();
+    const res = await fetch(`/api/barber/dashboard-data?barberId=${encodeURIComponent(barberId)}`, {
+      headers,
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to load barber dashboard.');
     return data;
@@ -146,9 +186,10 @@ export const bookingApi = {
     barberId: string,
     notes?: string
   ): Promise<{ appointment: Appointment }> {
+    const headers = await getAuthHeaders();
     const res = await fetch(`/api/barber/appointments/${id}/status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ status, barberId, notes }),
     });
     const data = await res.json();
@@ -157,9 +198,10 @@ export const bookingApi = {
   },
 
   async toggleBarberAvailability(barberId: string, isAvailable: boolean): Promise<Barber> {
+    const headers = await getAuthHeaders();
     const res = await fetch('/api/barber/availability', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ barberId, isAvailable }),
     });
     const data = await res.json();
@@ -181,16 +223,20 @@ export const bookingApi = {
     auditLogs: Array<{ id: string; action: string; performedBy: string; performedByRole: string; targetId?: string; details: Record<string, unknown>; createdAt: string }>;
     safetyReports: SafetyReport[];
   }> {
-    const res = await fetch('/api/admin/dashboard-data');
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/admin/dashboard-data', {
+      headers,
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to load admin dashboard.');
     return data;
   },
 
   async updateAdminBarberStatus(id: string, status: 'approved' | 'pending' | 'suspended', adminName?: string): Promise<Barber> {
+    const headers = await getAuthHeaders();
     const res = await fetch(`/api/admin/barbers/${id}/status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ status, adminName }),
     });
     const data = await res.json();
@@ -199,9 +245,10 @@ export const bookingApi = {
   },
 
   async reassignAppointment(id: string, newBarberId: string, adminName?: string): Promise<Appointment> {
+    const headers = await getAuthHeaders();
     const res = await fetch(`/api/admin/appointments/${id}/reassign`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ newBarberId, adminName }),
     });
     const data = await res.json();
@@ -217,9 +264,10 @@ export const bookingApi = {
     category: string;
     description: string;
   }): Promise<{ success: boolean; message: string; reportId: string }> {
+    const headers = await getAuthHeaders();
     const res = await fetch('/api/safety/report', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     });
     const data = await res.json();
@@ -227,13 +275,26 @@ export const bookingApi = {
     return data;
   },
 
-  async verifyPayment(reference: string, amount: number, memberId: string): Promise<boolean> {
-    const res = await fetch('/api/payments/verify', {
+  async initializePaystack(planId: string, email: string): Promise<{ authorization_url: string; access_code: string; reference: string }> {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/payments/paystack/initialize', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reference, amount, memberId }),
+      headers,
+      body: JSON.stringify({ planId, email }),
     });
     const data = await res.json();
-    return data.verified === true;
+    if (!res.ok) throw new Error(data.error || 'Paystack initialization failed.');
+    return data;
+  },
+
+  async verifyPaystackPayment(reference: string): Promise<{ verified: boolean; planId: string; message: string }> {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`/api/payments/paystack/verify/${encodeURIComponent(reference)}`, {
+      method: 'POST',
+      headers,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Paystack verification failed.');
+    return data;
   },
 };

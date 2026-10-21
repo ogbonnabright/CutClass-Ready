@@ -1,274 +1,63 @@
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import cors from 'cors';
 import dotenv from 'dotenv';
-import {
-  Appointment,
-  Barber,
-  CreditTransaction,
-  SafetyReport,
-  ServiceItem,
-  User,
-  UserRole,
-  AuditLog,
-} from './src/types';
+import { dbService } from './server/db';
+import { authMiddleware, requireAuth, requireRole, AuthenticatedRequest } from './server/authMiddleware';
+import { paystackService } from './server/paystack';
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+
+// Middleware
+app.use(cors());
+// Parse JSON and preserve raw body for webhook signature verification
+app.use(
+  express.json({
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString();
+    },
+  })
+);
+app.use(authMiddleware as any);
 
 // ============================================================================
-// IN-MEMORY / FIRESTORE REPOSITORY (Server-authoritative state)
+// 1. HEALTH & SYSTEM STATUS
 // ============================================================================
-
-// Pre-seeded Services
-const services: ServiceItem[] = [
-  {
-    id: 'srv-standard',
-    name: 'Standard Signature Haircut',
-    category: 'haircut',
-    description: 'Precision home haircut, edge cleanup, razor lineup, and post-cut antiseptic mist.',
-    durationMinutes: 45,
-    coveredByPlans: ['starter', 'regular', 'executive', 'family'],
-    extraCostNum: 0,
-    requiresHaircutCredit: true,
-    badge: 'Popular',
-  },
-  {
-    id: 'srv-executive',
-    name: 'Executive Haircut & Deep Treatment',
-    category: 'treatment',
-    description: 'Precision haircut paired with scalp exfoliation, therapeutic hair food, and steam towel treatment.',
-    durationMinutes: 60,
-    coveredByPlans: ['executive'],
-    extraCostNum: 7000, // ₦7,000 add-on if on Starter or Regular; ₦0 on Executive
-    requiresHaircutCredit: true,
-    badge: 'Executive Plan Included',
-  },
-  {
-    id: 'srv-beard',
-    name: 'Beard Sculpting & Hot Towel Care',
-    category: 'grooming',
-    description: 'Beard trimming, shape-up, organic softening oil, and warm eucalyptus towel massage.',
-    durationMinutes: 30,
-    coveredByPlans: ['executive'],
-    extraCostNum: 5000,
-    requiresHaircutCredit: false,
-    badge: 'Add-on',
-  },
-  {
-    id: 'srv-junior',
-    name: 'Junior / Student Haircut',
-    category: 'haircut',
-    description: 'Gentle, modern trim and line-up for children and teenagers (up to 16 years).',
-    durationMinutes: 35,
-    coveredByPlans: ['starter', 'regular', 'executive', 'family'],
-    extraCostNum: 0,
-    requiresHaircutCredit: true,
-  },
-];
-
-// Pre-seeded Certified Abuja Barbers
-const barbers: Barber[] = [
-  {
-    id: 'barber-tunde',
-    name: 'Tunde Balogun',
-    phone: '+234 803 456 7891',
-    bio: 'Master barber with 9 years of luxury mobile grooming experience in Abuja. Known for sharp skin fades and crisp beard lines.',
-    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
-    rating: 4.95,
-    reviewCount: 142,
-    status: 'approved',
-    isAvailable: true,
-    serviceAreas: ['Maitama', 'Wuse II', 'Central Business District (CBD)', 'Garki'],
-    specialties: ['Skin Fade', 'Razor Lineup', 'Executive Grooming'],
-    workingHours: { start: '09:00', end: '18:00' },
-  },
-  {
-    id: 'barber-emeka',
-    name: 'Emeka Nwosu',
-    phone: '+234 812 789 0123',
-    bio: 'Precision scissor and clipper specialist. Certified in organic hair care treatments and sensitive skin sanitation.',
-    avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=300&q=80',
-    rating: 4.92,
-    reviewCount: 98,
-    status: 'approved',
-    isAvailable: true,
-    serviceAreas: ['Jabi', 'Utako', 'Life Camp & Jahi', 'Wuse II'],
-    specialties: ['Scissor Work', 'Beard Shaping', 'Hair Treatment'],
-    workingHours: { start: '09:00', end: '18:00' },
-  },
-  {
-    id: 'barber-ibrahim',
-    name: 'Ibrahim Musa',
-    phone: '+234 809 345 6789',
-    bio: 'Fastidious with hygiene, punctuality, and classic gentleman cuts. Serving Apo, Guzape, and Asokoro homes.',
-    avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=300&q=80',
-    rating: 4.88,
-    reviewCount: 76,
-    status: 'approved',
-    isAvailable: true,
-    serviceAreas: ['Asokoro', 'Apo & Guzape', 'Garki'],
-    specialties: ['Classic Cut', 'Taper Fade', 'Beard Care'],
-    workingHours: { start: '09:00', end: '18:00' },
-  },
-  {
-    id: 'barber-daniel',
-    name: 'Daniel Peters',
-    phone: '+234 805 123 9876',
-    bio: 'Mobile grooming professional specializing in modern trends, waves, and hair care rituals.',
-    avatarUrl: 'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?auto=format&fit=crop&w=300&q=80',
-    rating: 4.9,
-    reviewCount: 64,
-    status: 'approved',
-    isAvailable: true,
-    serviceAreas: ['Maitama', 'Asokoro', 'Wuse II', 'Jabi'],
-    specialties: ['Texture Cut', 'Children Haircuts', 'Beard Sculpting'],
-    workingHours: { start: '09:00', end: '18:00' },
-  },
-];
-
-// Sample and active Appointments
-let appointments: Appointment[] = [
-  {
-    id: 'apt-seed-1',
-    bookingRef: 'CC-BK-51920',
-    memberId: 'member-demo',
-    memberName: 'Chinedu Eze',
-    memberEmail: 'chinedu@example.com',
-    memberPhone: '+234 802 345 6789',
-    barberId: 'barber-tunde',
-    barberName: 'Tunde Balogun',
-    barberAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
-    serviceId: 'srv-standard',
-    serviceName: 'Standard Signature Haircut',
-    serviceDurationMinutes: 45,
-    date: new Date(Date.now() + 86400000 * 2).toISOString().split('T')[0], // 2 days in future
-    time: '11:00',
-    locationType: 'home',
-    address: 'Plot 412, Aguiyi Ironsi Way, Maitama, Abuja',
-    district: 'Maitama',
-    landmark: 'Opposite Transcorp Hilton exit gate',
-    accessInstructions: 'Call upon arrival; security gate buzzer #4',
-    status: 'confirmed',
-    creditDeducted: 1,
-    extraCharge: 0,
-    paymentStatus: 'covered_by_plan',
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000).toISOString(),
-  },
-  {
-    id: 'apt-seed-2',
-    bookingRef: 'CC-BK-40912',
-    memberId: 'member-demo',
-    memberName: 'Chinedu Eze',
-    memberEmail: 'chinedu@example.com',
-    memberPhone: '+234 802 345 6789',
-    barberId: 'barber-emeka',
-    barberName: 'Emeka Nwosu',
-    barberAvatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=300&q=80',
-    serviceId: 'srv-standard',
-    serviceName: 'Standard Signature Haircut',
-    serviceDurationMinutes: 45,
-    date: new Date(Date.now() - 86400000 * 8).toISOString().split('T')[0], // 8 days ago
-    time: '15:30',
-    locationType: 'home',
-    address: 'Plot 412, Aguiyi Ironsi Way, Maitama, Abuja',
-    district: 'Maitama',
-    status: 'completed',
-    creditDeducted: 1,
-    extraCharge: 0,
-    paymentStatus: 'covered_by_plan',
-    createdAt: new Date(Date.now() - 86400000 * 9).toISOString(),
-    updatedAt: new Date(Date.now() - 86400000 * 8).toISOString(),
-  },
-];
-
-// Sample Credit Transactions
-let creditTransactions: CreditTransaction[] = [
-  {
-    id: 'tx-seed-1',
-    memberId: 'member-demo',
-    amount: 4,
-    balanceAfter: 4,
-    type: 'subscription_allocation',
-    description: 'Monthly Regular plan allocation (4 haircut credits)',
-    createdAt: new Date(Date.now() - 86400000 * 15).toISOString(),
-  },
-  {
-    id: 'tx-seed-2',
-    memberId: 'member-demo',
-    appointmentId: 'apt-seed-2',
-    amount: -1,
-    balanceAfter: 3,
-    type: 'booking_deduction',
-    description: 'Booking confirmation: CC-BK-40912 with Emeka Nwosu',
-    createdAt: new Date(Date.now() - 86400000 * 9).toISOString(),
-  },
-  {
-    id: 'tx-seed-3',
-    memberId: 'member-demo',
-    appointmentId: 'apt-seed-1',
-    amount: -1,
-    balanceAfter: 2,
-    type: 'booking_deduction',
-    description: 'Booking confirmation: CC-BK-51920 with Tunde Balogun',
-    createdAt: new Date(Date.now() - 86400000).toISOString(),
-  },
-];
-
-// Safety Reports
-const safetyReports: SafetyReport[] = [];
-
-// Audit Logs
-const auditLogs: AuditLog[] = [
-  {
-    id: 'log-1',
-    action: 'SYSTEM_BOOT',
-    performedBy: 'System',
-    performedByRole: 'system',
-    details: { message: 'CutClass appointment and subscription booking engine initialized' },
-    createdAt: new Date().toISOString(),
-  },
-];
-
-// Helper to log audit events
-function recordAuditLog(action: string, performedBy: string, performedByRole: string, details: Record<string, unknown>, targetId?: string) {
-  auditLogs.unshift({
-    id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-    action,
-    performedBy,
-    performedByRole,
-    targetId,
-    details,
-    createdAt: new Date().toISOString(),
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    service: 'CutClass Production Booking Engine',
+    timestamp: new Date().toISOString(),
+    paystackConfigured: paystackService.isConfigured(),
   });
-}
-
-// ============================================================================
-// API ROUTES
-// ============================================================================
-
-// 1. Services & Plan coverage
-app.get('/api/services', (_req: Request, res: Response) => {
-  res.json({ success: true, services });
 });
 
-// 2. Barbers list
-app.get('/api/barbers', (req: Request, res: Response) => {
-  const district = req.query.district as string | undefined;
-  let result = barbers.filter((b) => b.status === 'approved');
-  if (district) {
-    result = result.filter((b) =>
-      b.serviceAreas.some((area) => area.toLowerCase().includes(district.toLowerCase()))
-    );
+// ============================================================================
+// 2. SERVICES & BARBERS (Public / Semi-public)
+// ============================================================================
+app.get('/api/services', async (_req: Request, res: Response) => {
+  try {
+    const services = await dbService.getServices();
+    res.json({ success: true, services });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch services.' });
   }
-  res.json({ success: true, barbers: result });
 });
 
-// 3. Compute genuinely available time slots for a barber on a date
-app.get('/api/barbers/available-slots', (req: Request, res: Response) => {
+app.get('/api/barbers', async (req: Request, res: Response) => {
+  try {
+    const district = req.query.district as string | undefined;
+    const barbers = await dbService.getBarbers(district);
+    res.json({ success: true, barbers });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch barbers.' });
+  }
+});
+
+app.get('/api/barbers/available-slots', async (req: Request, res: Response) => {
   const { barberId, date, durationMinutes } = req.query;
 
   if (!barberId || !date) {
@@ -276,7 +65,7 @@ app.get('/api/barbers/available-slots', (req: Request, res: Response) => {
   }
 
   const duration = parseInt((durationMinutes as string) || '45', 10);
-  const barber = barbers.find((b) => b.id === barberId);
+  const barber = await dbService.getBarber(barberId as string);
 
   if (!barber) {
     return res.status(404).json({ error: 'Barber not found.' });
@@ -286,16 +75,12 @@ app.get('/api/barbers/available-slots', (req: Request, res: Response) => {
     return res.json({ success: true, slots: [], message: 'Barber is currently unavailable.' });
   }
 
-  // Find all non-cancelled appointments for this barber on this date
-  const bookedForBarber = appointments.filter(
-    (apt) =>
-      apt.barberId === barberId &&
-      apt.date === date &&
-      apt.status !== 'cancelled' &&
-      apt.status !== 'missed'
+  // Query appointments for this barber on this date from persistent store
+  const allApts = await dbService.getAppointmentsForBarber(barberId as string);
+  const bookedForBarber = allApts.filter(
+    (apt) => apt.date === date && apt.status !== 'cancelled' && apt.status !== 'missed'
   );
 
-  // Generate candidate slots every 30 mins between working hours (09:00 - 18:00)
   const candidateTimes = [
     '09:00', '09:30', '10:00', '10:30', '11:00', '11:30',
     '12:00', '12:30', '13:00', '13:30', '14:00', '14:30',
@@ -311,23 +96,21 @@ app.get('/api/barbers/available-slots', (req: Request, res: Response) => {
     const slotStartMin = h * 60 + m;
     const slotEndMin = slotStartMin + duration;
 
-    // Check if slot exceeds working day (18:00 = 1080 min)
+    // Must finish within barber working day (18:00 = 1080 min)
     if (slotEndMin > 18 * 60) return false;
 
-    // Minimum 2-hour lead time if booking today
+    // 2-hour minimum lead time for today's visits
     if (isToday) {
       const currentMin = now.getHours() * 60 + now.getMinutes();
       if (slotStartMin < currentMin + 120) return false;
     }
 
-    // Check for collision with existing appointments (with 30-min travel buffer between home visits)
+    // 30-min travel/sanitation buffer between home appointments
     const travelBufferMin = 30;
     const hasConflict = bookedForBarber.some((apt) => {
       const [aptH, aptM] = apt.time.split(':').map(Number);
       const aptStart = aptH * 60 + aptM;
       const aptEnd = aptStart + apt.serviceDurationMinutes;
-
-      // Overlap considering travel buffer: [slotStart, slotEnd] overlaps with [aptStart - buffer, aptEnd + buffer]
       return slotStartMin < aptEnd + travelBufferMin && slotEndMin + travelBufferMin > aptStart;
     });
 
@@ -343,8 +126,10 @@ app.get('/api/barbers/available-slots', (req: Request, res: Response) => {
   });
 });
 
-// 4. ATOMIC BOOKING CREATION
-app.post('/api/bookings', (req: Request, res: Response) => {
+// ============================================================================
+// 3. BOOKINGS — PROTECTED BY ATOMIC RESERVATIONS & FIRESTORE TRANSACTIONS
+// ============================================================================
+app.post('/api/bookings', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   const {
     memberId,
     memberName,
@@ -359,517 +144,532 @@ app.post('/api/bookings', (req: Request, res: Response) => {
     district,
     landmark,
     accessInstructions,
-    userSubscription,
-    userHaircutCredits,
     extraCharge = 0,
-    paymentStatus = 'covered_by_plan',
     paymentReference,
-    notes,
   } = req.body;
 
-  // Validation 1: Required fields
+  // Authorization check: User must book for themselves unless they are admin
+  if (req.user?.role !== 'admin' && req.user?.uid !== memberId) {
+    return res.status(403).json({
+      error: 'Forbidden: You cannot create bookings on behalf of other members.',
+    });
+  }
+
+  // Required parameters check
   if (!memberId || !barberId || !serviceId || !date || !time || !address || !district) {
     return res.status(400).json({ error: 'Missing required booking information.' });
   }
 
-  // Validation 2: Subscription verification
-  if (!userSubscription || userSubscription.status !== 'active') {
-    return res.status(403).json({
-      error: 'Active CutClass subscription required to book appointments. Please activate a plan first.',
-    });
-  }
-
-  // Validation 3: Haircut credits verification
-  const service = services.find((s) => s.id === serviceId);
-  if (!service) {
-    return res.status(404).json({ error: 'Service not found.' });
-  }
-
-  const creditsAvailable = userHaircutCredits !== undefined ? userHaircutCredits : 0;
-  if (service.requiresHaircutCredit && creditsAvailable < 1) {
-    return res.status(403).json({
-      error: 'Insufficient haircut credits. You have 0 available credits on your plan.',
-    });
-  }
-
-  // Validation 4: Barber existence and availability
-  const barber = barbers.find((b) => b.id === barberId);
-  if (!barber || barber.status !== 'approved' || !barber.isAvailable) {
-    return res.status(400).json({ error: 'Selected barber is not currently available for booking.' });
-  }
-
-  // Validation 5: Double-booking prevention check (Atomic conflict verification)
-  const [h, m] = (time as string).split(':').map(Number);
-  const slotStart = h * 60 + m;
-  const slotEnd = slotStart + service.durationMinutes;
-  const travelBuffer = 30;
-
-  const existingConflict = appointments.find(
-    (apt) =>
-      apt.barberId === barberId &&
-      apt.date === date &&
-      apt.status !== 'cancelled' &&
-      apt.status !== 'missed' &&
-      (() => {
-        const [aptH, aptM] = apt.time.split(':').map(Number);
-        const aptStart = aptH * 60 + aptM;
-        const aptEnd = aptStart + apt.serviceDurationMinutes;
-        return slotStart < aptEnd + travelBuffer && slotEnd + travelBuffer > aptStart;
-      })()
-  );
-
-  if (existingConflict) {
-    return res.status(409).json({
-      error: 'The requested time slot has just been reserved. Please select another time.',
-    });
-  }
-
-  // Generate unique Booking Reference
-  const randomSuffix = Math.floor(10000 + Math.random() * 90000);
-  const bookingRef = `CC-BK-${randomSuffix}`;
-  const appointmentId = `apt-${Date.now()}`;
-
-  const newAppointment: Appointment = {
-    id: appointmentId,
-    bookingRef,
-    memberId,
-    memberName,
-    memberEmail,
-    memberPhone: memberPhone || '+234 800 000 0000',
-    barberId,
-    barberName: barber.name,
-    barberAvatar: barber.avatarUrl,
-    serviceId: service.id,
-    serviceName: service.name,
-    serviceDurationMinutes: service.durationMinutes,
-    date,
-    time,
-    locationType,
-    address,
-    district,
-    landmark,
-    accessInstructions,
-    status: 'confirmed',
-    creditDeducted: service.requiresHaircutCredit ? 1 : 0,
-    extraCharge: Number(extraCharge) || 0,
-    paymentStatus,
-    paymentReference,
-    notes,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  appointments.unshift(newAppointment);
-
-  // Record credit transaction
-  const newCreditBalance = creditsAvailable - (service.requiresHaircutCredit ? 1 : 0);
-  if (service.requiresHaircutCredit) {
-    creditTransactions.unshift({
-      id: `tx-${Date.now()}`,
+  try {
+    // Atomic reservation & credit deduction via Firestore transaction
+    const result = await dbService.createAtomicBooking({
       memberId,
-      appointmentId: newAppointment.id,
-      amount: -1,
-      balanceAfter: newCreditBalance,
-      type: 'booking_deduction',
-      description: `Haircut booking ${bookingRef} with ${barber.name} (${date} at ${time})`,
-      createdAt: new Date().toISOString(),
+      memberName: memberName || req.user?.name || 'CutClass Member',
+      memberEmail: memberEmail || req.user?.email || '',
+      memberPhone,
+      barberId,
+      serviceId,
+      date,
+      time,
+      locationType,
+      address,
+      district,
+      landmark,
+      accessInstructions,
+      extraCharge,
+      paymentReference,
     });
+
+    await dbService.recordAuditLog({
+      action: 'BOOKING_CREATED_ATOMIC',
+      performedBy: req.user?.email || memberId,
+      performedByRole: req.user?.role || 'member',
+      targetId: result.appointment.id,
+      details: {
+        bookingRef: result.bookingRef,
+        barberId,
+        serviceId,
+        date,
+        time,
+        updatedCredits: result.updatedCredits,
+      },
+    });
+
+    res.status(201).json({
+      success: true,
+      appointment: result.appointment,
+      updatedCredits: result.updatedCredits,
+      bookingRef: result.bookingRef,
+    });
+  } catch (err: any) {
+    const status =
+      err.message?.includes('already been reserved')
+        ? 409
+        : err.message?.includes('Insufficient haircut') || err.message?.includes('Active CutClass')
+        ? 403
+        : 400;
+
+    res.status(status).json({ error: err.message || 'Failed to complete appointment booking.' });
   }
-
-  // Audit log
-  recordAuditLog(
-    'APPOINTMENT_CREATED',
-    memberName || memberId,
-    'member',
-    { bookingRef, barberName: barber.name, serviceName: service.name, date, time, newCreditBalance },
-    newAppointment.id
-  );
-
-  res.status(201).json({
-    success: true,
-    appointment: newAppointment,
-    updatedCredits: newCreditBalance,
-    bookingRef,
-  });
 });
 
-// 5. APPOINTMENT CANCELLATION WITH 12-HOUR CREDIT RESTORATION RULE
-app.post('/api/bookings/:id/cancel', (req: Request, res: Response) => {
+// Appointment Cancellation with 12-Hour Credit Restoration Rule
+app.post('/api/bookings/:id/cancel', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
-  const { memberId, reason = 'Member cancelled request' } = req.body;
+  const { reason = 'Member cancelled via portal' } = req.body;
 
-  const aptIndex = appointments.findIndex((a) => a.id === id);
-  if (aptIndex === -1) {
-    return res.status(404).json({ error: 'Appointment not found.' });
-  }
+  try {
+    const result = await dbService.cancelAppointment(
+      id,
+      req.user!.uid,
+      req.user!.role,
+      reason
+    );
 
-  const apt = appointments[aptIndex];
-
-  if (apt.status === 'cancelled') {
-    return res.status(400).json({ error: 'Appointment is already cancelled.' });
-  }
-
-  if (apt.status === 'completed') {
-    return res.status(400).json({ error: 'Cannot cancel an appointment that has already been completed.' });
-  }
-
-  // Calculate time remaining until appointment
-  const aptDateTime = new Date(`${apt.date}T${apt.time}:00`);
-  const hoursRemaining = (aptDateTime.getTime() - Date.now()) / (1000 * 60 * 60);
-
-  // Policy: Cancellations at least 12 hours before appointment restore haircut credit
-  const isEligibleForRefund = hoursRemaining >= 12;
-  const creditRestored = isEligibleForRefund && apt.creditDeducted > 0;
-
-  apt.status = 'cancelled';
-  apt.cancellationReason = reason;
-  apt.cancelledAt = new Date().toISOString();
-  apt.creditRestored = creditRestored;
-  apt.updatedAt = new Date().toISOString();
-
-  // If credit is restored, record refund transaction
-  if (creditRestored) {
-    creditTransactions.unshift({
-      id: `tx-${Date.now()}`,
-      memberId: apt.memberId,
-      appointmentId: apt.id,
-      amount: 1,
-      balanceAfter: 0, // client computes or increments
-      type: 'cancellation_refund',
-      description: `Credit restored: Cancelled booking ${apt.bookingRef} (>12h notice)`,
-      createdAt: new Date().toISOString(),
+    await dbService.recordAuditLog({
+      action: 'APPOINTMENT_CANCELLED',
+      performedBy: req.user!.email || req.user!.uid,
+      performedByRole: req.user!.role,
+      targetId: id,
+      details: {
+        bookingRef: result.appointment.bookingRef,
+        creditRestored: result.creditRestored,
+        reason,
+      },
     });
+
+    res.json({
+      success: true,
+      appointment: result.appointment,
+      creditRestored: result.creditRestored,
+      message: result.message,
+    });
+  } catch (err: any) {
+    const status = err.message?.includes('Forbidden') ? 403 : 400;
+    res.status(status).json({ error: err.message });
   }
-
-  recordAuditLog(
-    'APPOINTMENT_CANCELLED',
-    memberId || apt.memberId,
-    'member',
-    { bookingRef: apt.bookingRef, hoursRemaining: hoursRemaining.toFixed(1), creditRestored },
-    apt.id
-  );
-
-  res.json({
-    success: true,
-    appointment: apt,
-    creditRestored,
-    hoursRemaining: hoursRemaining.toFixed(1),
-    message: creditRestored
-      ? 'Appointment cancelled successfully. Your 1 haircut credit has been restored to your balance.'
-      : 'Appointment cancelled within the 12-hour window. According to CutClass policy, credits are not restored for late cancellations.',
-  });
 });
 
-// 6. APPOINTMENT RESCHEDULING
-app.post('/api/bookings/:id/reschedule', (req: Request, res: Response) => {
+// Appointment Rescheduling
+app.post('/api/bookings/:id/reschedule', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
-  const { newDate, newTime, memberId } = req.body;
+  const { newDate, newTime } = req.body;
 
   if (!newDate || !newTime) {
     return res.status(400).json({ error: 'Missing new date or time.' });
   }
 
-  const apt = appointments.find((a) => a.id === id);
-  if (!apt) {
-    return res.status(404).json({ error: 'Appointment not found.' });
+  try {
+    const updated = await dbService.rescheduleAppointment(
+      id,
+      newDate,
+      newTime,
+      req.user!.uid,
+      req.user!.role
+    );
+
+    await dbService.recordAuditLog({
+      action: 'APPOINTMENT_RESCHEDULED',
+      performedBy: req.user!.email || req.user!.uid,
+      performedByRole: req.user!.role,
+      targetId: id,
+      details: {
+        bookingRef: updated.bookingRef,
+        newDate,
+        newTime,
+      },
+    });
+
+    res.json({
+      success: true,
+      appointment: updated,
+      message: `Appointment successfully rescheduled to ${newDate} at ${newTime}.`,
+    });
+  } catch (err: any) {
+    const status = err.message?.includes('unavailable') ? 409 : 400;
+    res.status(status).json({ error: err.message });
   }
-
-  if (apt.status !== 'confirmed' && apt.status !== 'pending_approval') {
-    return res.status(400).json({ error: `Cannot reschedule appointment with status: ${apt.status}` });
-  }
-
-  // Conflict check for the new date and time
-  const [h, m] = (newTime as string).split(':').map(Number);
-  const slotStart = h * 60 + m;
-  const slotEnd = slotStart + apt.serviceDurationMinutes;
-  const travelBuffer = 30;
-
-  const conflict = appointments.find(
-    (a) =>
-      a.id !== apt.id &&
-      a.barberId === apt.barberId &&
-      a.date === newDate &&
-      a.status !== 'cancelled' &&
-      a.status !== 'missed' &&
-      (() => {
-        const [aptH, aptM] = a.time.split(':').map(Number);
-        const aptStart = aptH * 60 + aptM;
-        const aptEnd = aptStart + a.serviceDurationMinutes;
-        return slotStart < aptEnd + travelBuffer && slotEnd + travelBuffer > aptStart;
-      })()
-  );
-
-  if (conflict) {
-    return res.status(409).json({ error: 'The new time slot is no longer available. Please choose another slot.' });
-  }
-
-  const oldDate = apt.date;
-  const oldTime = apt.time;
-
-  apt.date = newDate;
-  apt.time = newTime;
-  apt.updatedAt = new Date().toISOString();
-
-  recordAuditLog(
-    'APPOINTMENT_RESCHEDULED',
-    memberId || apt.memberId,
-    'member',
-    { bookingRef: apt.bookingRef, from: `${oldDate} ${oldTime}`, to: `${newDate} ${newTime}` },
-    apt.id
-  );
-
-  res.json({
-    success: true,
-    appointment: apt,
-    message: `Appointment successfully rescheduled to ${newDate} at ${newTime}.`,
-  });
 });
 
-// 7. MEMBER DASHBOARD DATA
-app.get('/api/member/dashboard-data', (req: Request, res: Response) => {
-  const memberId = (req.query.memberId as string) || 'member-demo';
+// ============================================================================
+// 4. MEMBER DASHBOARD DATA (Protected)
+// ============================================================================
+app.get('/api/member/dashboard-data', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const requestedMemberId = (req.query.memberId as string) || req.user!.uid;
 
-  const memberAppointments = appointments.filter((a) => a.memberId === memberId);
-  const memberTxs = creditTransactions.filter((tx) => tx.memberId === memberId);
-
-  // Partition into upcoming, completed, cancelled
-  const upcoming = memberAppointments.filter(
-    (a) => a.status === 'confirmed' || a.status === 'pending_approval' || a.status === 'in_progress'
-  );
-  const past = memberAppointments.filter((a) => a.status === 'completed');
-  const cancelled = memberAppointments.filter((a) => a.status === 'cancelled' || a.status === 'missed');
-
-  res.json({
-    success: true,
-    appointments: {
-      upcoming,
-      past,
-      cancelled,
-      all: memberAppointments,
-    },
-    transactions: memberTxs,
-  });
-});
-
-// 8. BARBER DASHBOARD DATA
-app.get('/api/barber/dashboard-data', (req: Request, res: Response) => {
-  const barberId = (req.query.barberId as string) || 'barber-tunde';
-
-  const barber = barbers.find((b) => b.id === barberId) || barbers[0];
-  const assigned = appointments.filter((a) => a.barberId === barber.id);
-
-  const todayStr = new Date().toISOString().split('T')[0];
-  const todayApts = assigned.filter((a) => a.date === todayStr && a.status !== 'cancelled');
-  const upcomingApts = assigned.filter((a) => a.date > todayStr && a.status !== 'cancelled');
-  const pastApts = assigned.filter((a) => a.status === 'completed' || a.status === 'missed');
-
-  res.json({
-    success: true,
-    barber,
-    schedule: {
-      today: todayApts,
-      upcoming: upcomingApts,
-      past: pastApts,
-      all: assigned,
-    },
-  });
-});
-
-// 9. BARBER STATUS UPDATE (In progress, Completed, Missed)
-app.post('/api/barber/appointments/:id/status', (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { status, barberId, notes } = req.body;
-
-  const validStatuses = ['confirmed', 'in_progress', 'completed', 'missed', 'cancelled'];
-  if (!validStatuses.includes(status)) {
-    return res.status(400).json({ error: 'Invalid appointment status.' });
+  // Enforce member isolation
+  if (req.user!.role !== 'admin' && req.user!.uid !== requestedMemberId) {
+    return res.status(403).json({
+      error: 'Forbidden: You can only view your own member dashboard.',
+    });
   }
 
-  const apt = appointments.find((a) => a.id === id);
-  if (!apt) {
-    return res.status(404).json({ error: 'Appointment not found.' });
+  try {
+    const memberAppointments = await dbService.getAppointmentsForMember(requestedMemberId);
+    const transactions = await dbService.getTransactionsForMember(requestedMemberId);
+
+    const upcoming = memberAppointments.filter(
+      (a) => a.status === 'confirmed' || a.status === 'pending_approval' || a.status === 'in_progress'
+    );
+    const past = memberAppointments.filter((a) => a.status === 'completed');
+    const cancelled = memberAppointments.filter((a) => a.status === 'cancelled' || a.status === 'missed');
+
+    res.json({
+      success: true,
+      appointments: {
+        upcoming,
+        past,
+        cancelled,
+        all: memberAppointments,
+      },
+      transactions,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-
-  apt.status = status;
-  if (notes) apt.notes = notes;
-  apt.updatedAt = new Date().toISOString();
-
-  recordAuditLog(
-    'BARBER_STATUS_UPDATE',
-    barberId || apt.barberName,
-    'barber',
-    { bookingRef: apt.bookingRef, newStatus: status, notes },
-    apt.id
-  );
-
-  res.json({ success: true, appointment: apt });
 });
 
-// 10. BARBER AVAILABILITY TOGGLE
-app.post('/api/barber/availability', (req: Request, res: Response) => {
-  const { barberId, isAvailable } = req.body;
+// ============================================================================
+// 5. BARBER DASHBOARD DATA & STATUS TRANSITIONS (Protected by Barber Role)
+// ============================================================================
+app.get(
+  '/api/barber/dashboard-data',
+  requireAuth,
+  requireRole('barber', 'admin'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    const barberId = (req.query.barberId as string) || 'barber-tunde';
 
-  const barber = barbers.find((b) => b.id === barberId);
-  if (!barber) {
-    return res.status(404).json({ error: 'Barber not found.' });
+    try {
+      const barber = await dbService.getBarber(barberId);
+      if (!barber) return res.status(404).json({ error: 'Barber not found.' });
+
+      const assigned = await dbService.getAppointmentsForBarber(barber.id);
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      const todayApts = assigned.filter((a) => a.date === todayStr && a.status !== 'cancelled');
+      const upcomingApts = assigned.filter((a) => a.date > todayStr && a.status !== 'cancelled');
+      const pastApts = assigned.filter((a) => a.status === 'completed' || a.status === 'missed');
+
+      res.json({
+        success: true,
+        barber,
+        schedule: {
+          today: todayApts,
+          upcoming: upcomingApts,
+          past: pastApts,
+          all: assigned,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   }
+);
 
-  barber.isAvailable = Boolean(isAvailable);
+app.post(
+  '/api/barber/appointments/:id/status',
+  requireAuth,
+  requireRole('barber', 'admin'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    const { status, notes } = req.body;
 
-  recordAuditLog(
-    'BARBER_AVAILABILITY_CHANGED',
-    barber.name,
-    'barber',
-    { isAvailable: barber.isAvailable },
-    barber.id
-  );
+    const validStatuses = ['confirmed', 'in_progress', 'completed', 'missed'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid appointment status transition.' });
+    }
 
-  res.json({ success: true, barber });
-});
+    try {
+      const apt = await dbService.getAppointment(id);
+      if (!apt) return res.status(404).json({ error: 'Appointment not found.' });
 
-// 11. ADMIN DASHBOARD OVERVIEW
-app.get('/api/admin/dashboard-data', (_req: Request, res: Response) => {
-  const totalBookings = appointments.length;
-  const completedBookings = appointments.filter((a) => a.status === 'completed').length;
-  const activeBookings = appointments.filter((a) => a.status === 'confirmed').length;
-  const cancelledBookings = appointments.filter((a) => a.status === 'cancelled').length;
+      apt.status = status;
+      if (notes) apt.notes = notes;
+      apt.updatedAt = new Date().toISOString();
 
-  res.json({
-    success: true,
-    stats: {
-      totalBookings,
-      activeBookings,
-      completedBookings,
-      cancelledBookings,
-      totalBarbers: barbers.length,
-      approvedBarbers: barbers.filter((b) => b.status === 'approved').length,
-    },
-    barbers,
-    appointments,
-    auditLogs: auditLogs.slice(0, 50),
-    safetyReports,
-  });
-});
+      await dbService.recordAuditLog({
+        action: 'BARBER_APPOINTMENT_STATUS_TRANSITION',
+        performedBy: req.user!.email || req.user!.uid,
+        performedByRole: req.user!.role,
+        targetId: id,
+        details: { bookingRef: apt.bookingRef, status, notes },
+      });
 
-// 12. ADMIN BARBER MANAGEMENT (Approve, Suspend)
-app.post('/api/admin/barbers/:id/status', (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { status, adminName = 'CutClass Admin' } = req.body;
-
-  const barber = barbers.find((b) => b.id === id);
-  if (!barber) {
-    return res.status(404).json({ error: 'Barber not found.' });
+      res.json({ success: true, appointment: apt });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   }
+);
 
-  const oldStatus = barber.status;
-  barber.status = status;
+app.post(
+  '/api/barber/availability',
+  requireAuth,
+  requireRole('barber', 'admin'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { barberId, isAvailable } = req.body;
 
-  recordAuditLog(
-    'ADMIN_BARBER_STATUS_CHANGED',
-    adminName,
-    'admin',
-    { barberName: barber.name, from: oldStatus, to: status },
-    barber.id
-  );
-
-  res.json({ success: true, barber });
-});
-
-// 13. ADMIN REASSIGN APPOINTMENT
-app.post('/api/admin/appointments/:id/reassign', (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { newBarberId, adminName = 'CutClass Admin' } = req.body;
-
-  const apt = appointments.find((a) => a.id === id);
-  if (!apt) return res.status(404).json({ error: 'Appointment not found.' });
-
-  const targetBarber = barbers.find((b) => b.id === newBarberId);
-  if (!targetBarber || targetBarber.status !== 'approved') {
-    return res.status(400).json({ error: 'Target barber is not available for reassignment.' });
+    try {
+      const updated = await dbService.updateBarber(barberId, { isAvailable: Boolean(isAvailable) });
+      res.json({ success: true, barber: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   }
+);
 
-  const oldBarber = apt.barberName;
-  apt.barberId = targetBarber.id;
-  apt.barberName = targetBarber.name;
-  apt.barberAvatar = targetBarber.avatarUrl;
-  apt.updatedAt = new Date().toISOString();
+// ============================================================================
+// 6. ADMIN DASHBOARD & MANAGEMENT (Protected by Admin Role)
+// ============================================================================
+app.get(
+  '/api/admin/dashboard-data',
+  requireAuth,
+  requireRole('admin'),
+  async (_req: AuthenticatedRequest, res: Response) => {
+    try {
+      const barbers = await dbService.getBarbers();
+      const appointments = await dbService.getAllAppointments();
+      const auditLogs = await dbService.getAuditLogs();
+      const safetyReports = await dbService.getSafetyReports();
 
-  recordAuditLog(
-    'ADMIN_APPOINTMENT_REASSIGNED',
-    adminName,
-    'admin',
-    { bookingRef: apt.bookingRef, from: oldBarber, to: targetBarber.name },
-    apt.id
-  );
+      const totalBookings = appointments.length;
+      const activeBookings = appointments.filter((a) => a.status === 'confirmed').length;
+      const completedBookings = appointments.filter((a) => a.status === 'completed').length;
+      const cancelledBookings = appointments.filter((a) => a.status === 'cancelled').length;
 
-  res.json({ success: true, appointment: apt });
-});
-
-// 14. SAFETY CONCERN REPORTING
-app.post('/api/safety/report', (req: Request, res: Response) => {
-  const { appointmentRef, reporterId, reporterRole, reporterName, category, description } = req.body;
-
-  if (!appointmentRef || !description) {
-    return res.status(400).json({ error: 'Appointment reference and description are required.' });
+      res.json({
+        success: true,
+        stats: {
+          totalBookings,
+          activeBookings,
+          completedBookings,
+          cancelledBookings,
+          totalBarbers: barbers.length,
+          approvedBarbers: barbers.filter((b) => b.status === 'approved').length,
+        },
+        barbers,
+        appointments,
+        auditLogs,
+        safetyReports,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   }
+);
 
-  const report: SafetyReport = {
-    id: `rep-${Date.now()}`,
-    appointmentRef,
-    reporterId: reporterId || 'unknown',
-    reporterRole: reporterRole || 'member',
-    reporterName: reporterName || 'Anonymous',
-    category: category || 'other',
-    description,
-    status: 'submitted',
-    createdAt: new Date().toISOString(),
+app.post(
+  '/api/admin/barbers/:id/status',
+  requireAuth,
+  requireRole('admin'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    try {
+      const updated = await dbService.updateBarber(id, { status });
+      await dbService.recordAuditLog({
+        action: 'ADMIN_BARBER_STATUS_UPDATE',
+        performedBy: req.user!.email || 'Admin',
+        performedByRole: 'admin',
+        targetId: id,
+        details: { status },
+      });
+      res.json({ success: true, barber: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post(
+  '/api/admin/appointments/:id/reassign',
+  requireAuth,
+  requireRole('admin'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    const { newBarberId } = req.body;
+
+    try {
+      const apt = await dbService.getAppointment(id);
+      if (!apt) return res.status(404).json({ error: 'Appointment not found.' });
+
+      const targetBarber = await dbService.getBarber(newBarberId);
+      if (!targetBarber || targetBarber.status !== 'approved') {
+        return res.status(400).json({ error: 'Target barber is not available.' });
+      }
+
+      apt.barberId = targetBarber.id;
+      apt.barberName = targetBarber.name;
+      apt.barberAvatar = targetBarber.avatarUrl;
+      apt.updatedAt = new Date().toISOString();
+
+      await dbService.recordAuditLog({
+        action: 'ADMIN_APPOINTMENT_REASSIGNED',
+        performedBy: req.user!.email || 'Admin',
+        performedByRole: 'admin',
+        targetId: id,
+        details: { bookingRef: apt.bookingRef, targetBarberName: targetBarber.name },
+      });
+
+      res.json({ success: true, appointment: apt });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// ============================================================================
+// 7. PAYSTACK RECURRING PAYMENTS & VERIFICATION (Server-side)
+// ============================================================================
+app.post('/api/payments/paystack/initialize', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { planId, email, callbackUrl } = req.body;
+
+  const planPricing: Record<string, number> = {
+    starter: 15000,
+    regular: 28000,
+    executive: 35000,
+    family: 48000,
   };
 
-  safetyReports.unshift(report);
-
-  recordAuditLog(
-    'SAFETY_REPORT_SUBMITTED',
-    report.reporterName,
-    report.reporterRole,
-    { appointmentRef, category },
-    report.id
-  );
-
-  res.status(201).json({
-    success: true,
-    reportId: report.id,
-    message: 'Your safety concern has been submitted to CutClass Dispatch & Member Care for immediate review.',
-  });
-});
-
-// 15. PAYSTACK PAYMENT VERIFICATION (For extra charges / plan payments)
-app.post('/api/payments/verify', (req: Request, res: Response) => {
-  const { reference, amount, memberId } = req.body;
-
-  if (!reference) {
-    return res.status(400).json({ error: 'Payment reference required.' });
+  const amountNaira = planPricing[planId];
+  if (!amountNaira) {
+    return res.status(400).json({ error: 'Invalid subscription plan specified.' });
   }
 
-  // Record audit
-  recordAuditLog(
-    'PAYMENT_VERIFIED',
-    memberId || 'member',
-    'system',
-    { reference, amount: amount || 0, provider: 'Paystack' }
-  );
+  const amountKobo = amountNaira * 100;
 
-  res.json({
-    success: true,
-    verified: true,
-    reference,
-    message: 'Payment verified successfully through Paystack.',
-  });
+  try {
+    const data = await paystackService.initializeTransaction({
+      email: email || req.user!.email,
+      amountKobo,
+      planId,
+      memberId: req.user!.uid,
+      callbackUrl,
+    });
+
+    res.json({ success: true, ...data });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Payment initialization failed.' });
+  }
+});
+
+app.post('/api/payments/paystack/verify/:reference', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { reference } = req.params;
+
+  try {
+    const verification = await paystackService.verifyTransaction(reference);
+
+    if (!verification.verified) {
+      return res.status(400).json({
+        error: 'Paystack payment could not be verified or was unsuccessful.',
+        status: verification.status,
+      });
+    }
+
+    const planId = verification.planId || 'regular';
+    await dbService.recordVerifiedPaymentAndActivateSubscription(
+      reference,
+      req.user!.uid,
+      planId,
+      verification.amount,
+      verification.channel
+    );
+
+    await dbService.recordAuditLog({
+      action: 'PAYSTACK_PAYMENT_VERIFIED',
+      performedBy: req.user!.email || req.user!.uid,
+      performedByRole: req.user!.role,
+      targetId: reference,
+      details: {
+        amount: verification.amount,
+        currency: verification.currency,
+        planId,
+      },
+    });
+
+    res.json({
+      success: true,
+      verified: true,
+      planId,
+      amount: verification.amount,
+      message: 'Payment verified successfully. Your CutClass subscription and haircut credits are now active!',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Paystack Webhook Handler (Idempotent)
+app.post('/api/payments/paystack/webhook', async (req: any, res: Response) => {
+  const signature = req.headers['x-paystack-signature'] as string;
+  const isValid = paystackService.verifyWebhookSignature(req.rawBody || JSON.stringify(req.body), signature);
+
+  if (!isValid) {
+    return res.status(401).send('Invalid Paystack signature');
+  }
+
+  const event = req.body;
+  if (event.event === 'charge.success') {
+    const { reference, amount, customer, metadata, channel } = event.data;
+    const memberId = metadata?.memberId;
+    const planId = metadata?.planId || 'regular';
+
+    if (memberId && reference) {
+      await dbService.recordVerifiedPaymentAndActivateSubscription(
+        reference,
+        memberId,
+        planId,
+        amount / 100,
+        channel || 'card'
+      );
+    }
+  }
+
+  res.sendStatus(200);
 });
 
 // ============================================================================
-// MOUNT VITE OR STATIC ASSETS
+// 8. SAFETY & CONCERNS
 // ============================================================================
+app.post('/api/safety/report', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { appointmentRef, category, description } = req.body;
 
+  if (!appointmentRef || !description) {
+    return res.status(400).json({ error: 'Missing appointment reference or description.' });
+  }
+
+  try {
+    const report = await dbService.createSafetyReport({
+      appointmentRef,
+      reporterId: req.user!.uid,
+      reporterRole: req.user!.role,
+      reporterName: req.user!.name || req.user!.email,
+      category,
+      description,
+    });
+
+    await dbService.recordAuditLog({
+      action: 'SAFETY_REPORT_FILED',
+      performedBy: req.user!.email || req.user!.uid,
+      performedByRole: req.user!.role,
+      targetId: report.id,
+      details: { appointmentRef, category },
+    });
+
+    res.status(201).json({
+      success: true,
+      reportId: report.id,
+      message: 'Your concern has been submitted to CutClass Member Care for priority review.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// 9. CLIENT APPLICATION SERVING & CLOUD RUN ENTRY
+// ============================================================================
 async function startServer() {
   const isProduction = process.env.NODE_ENV === 'production';
 
@@ -888,10 +688,10 @@ async function startServer() {
 
   const PORT = 3000;
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`CutClass App running on http://0.0.0.0:${PORT}`);
+    console.log(`CutClass Server listening on port ${PORT}`);
   });
 }
 
 startServer().catch((err) => {
-  console.error('Failed to start server:', err);
+  console.error('Server boot failed:', err);
 });
