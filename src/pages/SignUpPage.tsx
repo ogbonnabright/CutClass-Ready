@@ -985,13 +985,15 @@ export const SignUpPage: React.FC<SignUpPageProps> = ({ onNavigate }) => {
                     {completedSubscription.planName} ({completedSubscription.price}/mo)
                   </span>
                 </div>
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-[#787168]">Payment Method</span>
-                  <span className="font-medium text-[#1a1714] uppercase">
-                    {completedSubscription.paymentMethod.brand} ••••{' '}
-                    {completedSubscription.paymentMethod.last4}
-                  </span>
-                </div>
+                {completedSubscription.paymentMethod && (
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-[#787168]">Payment Method</span>
+                    <span className="font-medium text-[#1a1714] uppercase">
+                      {completedSubscription.paymentMethod.brand} ••••{' '}
+                      {completedSubscription.paymentMethod.last4}
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between items-center text-sm border-t border-[#e8e2d8] pt-3">
                   <span className="text-[#787168]">Next Billing Date</span>
                   <span className="font-medium text-[#1a1714]">

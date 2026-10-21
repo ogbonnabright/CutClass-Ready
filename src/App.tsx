@@ -6,6 +6,8 @@ import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
 import { SignUpPage } from './pages/SignUpPage';
 import { ProfilePage } from './pages/ProfilePage';
+import { BarberDashboard } from './pages/BarberDashboard';
+import { AdminDashboard } from './pages/AdminDashboard';
 import { InquiryModal } from './components/InquiryModal';
 import { AvailabilityModal } from './components/AvailabilityModal';
 import { Plan } from './types';
@@ -54,14 +56,19 @@ export default function App() {
     setInquiryOpen(true);
   };
 
-  const isAuthPage = currentPath === '/login' || currentPath === '/signup';
+  const isStandalonePage =
+    currentPath === '/login' ||
+    currentPath === '/signup' ||
+    currentPath === '/barber' ||
+    currentPath === '/admin' ||
+    currentPath === '/profile';
 
   return (
     <ThemeProvider>
       <AuthProvider>
         <div className="min-h-screen bg-background font-body text-foreground antialiased">
-          {/* Site Nav is displayed on main pages; login and signup have their own header matching original */}
-          {!isAuthPage && (
+          {/* Site Nav is displayed on main public pages */}
+          {!isStandalonePage && (
             <SiteNav
               currentPath={currentPath}
               onNavigate={navigate}
@@ -79,6 +86,9 @@ export default function App() {
               onOpenInquiry={handleOpenInquiry}
             />
           )}
+          {currentPath === '/barber' && <BarberDashboard onNavigate={navigate} />}
+          {currentPath === '/admin' && <AdminDashboard onNavigate={navigate} />}
+
           {currentPath === '/' && (
             <HomePage
               onNavigate={navigate}

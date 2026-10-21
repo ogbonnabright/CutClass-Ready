@@ -10,7 +10,7 @@ import {
   type User as FirebaseUser,
 } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { User, UserSubscription } from '../types';
+import { User, UserSubscription, UserRole } from '../types';
 import { auth, db, isFirebaseConfigured } from '../lib/firebase';
 
 interface SignUpData {
@@ -65,6 +65,7 @@ async function profileFor(firebaseUser: FirebaseUser): Promise<User> {
     email: firebaseUser.email || '',
     emailVerified: firebaseUser.emailVerified,
     createdAt,
+    role: (existing.role as UserRole) || 'member',
     haircutCredits: existing.haircutCredits ?? 0,
     subscription: existing.subscription ?? null,
   };
@@ -104,6 +105,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           email: firebaseUser.email || '',
           emailVerified: firebaseUser.emailVerified,
           createdAt: new Date().toISOString(),
+          role: 'member',
           haircutCredits: 0,
           subscription: null,
         });
@@ -170,6 +172,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           id: credential.user.uid,
           name: name.trim(),
           email: credential.user.email || email.trim(),
+          role: 'member',
           emailVerified: credential.user.emailVerified,
           createdAt: new Date().toISOString(),
           haircutCredits: creditsCount,
@@ -187,6 +190,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       id: 'member_' + Math.random().toString(36).substring(2, 9),
       name: name.trim(),
       email: email.trim(),
+      role: 'member',
       emailVerified: true,
       createdAt: new Date().toISOString(),
       haircutCredits: creditsCount,

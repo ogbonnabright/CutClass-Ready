@@ -1,23 +1,107 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Users can read and update only their own profile document.
-    // Never store passwords in Firestore; Firebase Authentication manages credentials.
-    match /users/{userId} {
-      allow create: if request.auth != null
-                    && request.auth.uid == userId
-                    && request.resource.data.uid == userId
-                    && request.resource.data.email == request.auth.token.email;
-      allow read: if request.auth != null && request.auth.uid == userId;
-      allow update: if request.auth != null
-                    && request.auth.uid == userId
-                    && request.resource.data.uid == resource.data.uid
-                    && request.resource.data.email == resource.data.email;
-      allow delete: if false;
+
+    // Helper functions for role & auth checks
+    function isAuthenticated() {
+      return request.auth != null;
     }
 
-    // Deny all other reads/writes until explicit rules are added for bookings,
-    // subscriptions, barber profiles, and other business data.
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (request.auth.token.role == 'admin' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+    }
+
+    function isBarber() {
+      return isAuthenticated() &&
+        (request.auth.token.role == 'barber' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'barber');
+    }
+
+    // 1. Users collection
+    // Members can read and update only their own profile document.
+    // Admins can read all profiles to manage memberships.
+    match /users/{userId} {
+      allow create: if isOwner(userId)
+                    && request.resource.data.uid == userId
+                    && request.resource.data.email == request.auth.token.email;
+      allow read: if isOwner(userId) || isAdmin();
+      allow update: if (isOwner(userId) && request.resource.data.uid == resource.data.uid)
+                    || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 2. Barbers collection
+    // Approved barbers can be viewed by authenticated users to book haircuts.
+    // Barbers can update their own availability. Admins have full access.
+    match /barbers/{barberId} {
+      allow read: if isAuthenticated();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isAuthenticated() && request.auth.uid == barberId);
+    }
+
+    // 3. Appointments collection
+    // Members can read their own bookings.
+    // Assigned barbers can view their assigned bookings.
+    // Admins can read and manage all bookings.
+    // Creation requires authenticated member or admin.
+    match /appointments/{appointmentId} {
+      allow read: if isAuthenticated() && (
+        resource.data.memberId == request.auth.uid ||
+        resource.data.barberId == request.auth.uid ||
+        isAdmin()
+      );
+      allow create: if isAuthenticated() && (
+        request.resource.data.memberId == request.auth.uid ||
+        isAdmin()
+      );
+      allow update: if isAuthenticated() && (
+        resource.data.memberId == request.auth.uid ||
+        resource.data.barberId == request.auth.uid ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 4. Credit Transactions collection
+    // Members can read their own transaction history.
+    // Transactions can only be created by server/admin or member creating a booking.
+    match /creditTransactions/{txId} {
+      allow read: if isAuthenticated() && (
+        resource.data.memberId == request.auth.uid ||
+        isAdmin()
+      );
+      allow write: if isAdmin() || (isAuthenticated() && request.resource.data.memberId == request.auth.uid);
+    }
+
+    // 5. Services collection
+    // Readable by all authenticated users; modified only by admins.
+    match /services/{serviceId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // 6. Safety Reports collection
+    // Any member or barber can file a safety report.
+    // Only the reporter and admins can read it.
+    match /safetyReports/{reportId} {
+      allow create: if isAuthenticated() && request.resource.data.reporterId == request.auth.uid;
+      allow read: if isAuthenticated() && (resource.data.reporterId == request.auth.uid || isAdmin());
+      allow update, delete: if isAdmin();
+    }
+
+    // 7. Audit Logs collection
+    // Strictly restricted to admins.
+    match /auditLogs/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Deny all other access
     match /{document=**} {
       allow read, write: if false;
     }
