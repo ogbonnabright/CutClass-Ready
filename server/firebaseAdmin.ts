@@ -10,6 +10,8 @@ let adminApp: App | null = null;
 let firestoreInstance: Firestore | null = null;
 let authInstance: Auth | null = null;
 let isFirebaseAdminInitialized = false;
+let initDiagnosticMessage: string = 'Firebase Admin not initialized.';
+let credentialStatus: 'service_account' | 'adc' | 'invalid' | 'missing' = 'missing';
 
 try {
   const existingApps = getApps();
@@ -37,31 +39,59 @@ try {
           serviceAccount = JSON.parse(decoded);
         }
 
+        if (!serviceAccount || typeof serviceAccount !== 'object') {
+          throw new Error('Service account must be a valid JSON object');
+        }
+
+        const effectiveProjectId = serviceAccount.project_id || projectId;
         adminApp = initializeApp({
           credential: cert(serviceAccount),
-          projectId,
+          projectId: effectiveProjectId,
         });
         isFirebaseAdminInitialized = true;
+        credentialStatus = 'service_account';
+        initDiagnosticMessage = `Authenticated via service account for project "${effectiveProjectId}".`;
+        console.log(`[Firebase Admin] ${initDiagnosticMessage}`);
       } catch (err: any) {
-        console.warn('[Firebase Admin] Invalid service account credential provided:', err.message);
-        adminApp = initializeApp({ projectId });
-        isFirebaseAdminInitialized = true;
+        credentialStatus = 'invalid';
+        initDiagnosticMessage = `Invalid FIREBASE_SERVICE_ACCOUNT_KEY provided: ${err.message}`;
+        console.error(`[Firebase Admin] Diagnostic Error: ${initDiagnosticMessage}`);
+        // Attempt fallback to ADC
+        try {
+          adminApp = initializeApp({ projectId });
+          initDiagnosticMessage += ` (Fallback to ADC initialized for project "${projectId}")`;
+        } catch (adcErr: any) {
+          console.error(`[Firebase Admin] ADC fallback failed: ${adcErr.message}`);
+        }
       }
     } else {
-      adminApp = initializeApp({ projectId });
-      isFirebaseAdminInitialized = true;
+      credentialStatus = 'missing';
+      console.warn(
+        `[Firebase Admin] Diagnostic Notice: FIREBASE_SERVICE_ACCOUNT_KEY not set. Attempting Application Default Credentials (ADC) for project "${projectId}".`
+      );
+      try {
+        adminApp = initializeApp({ projectId });
+        credentialStatus = 'adc';
+        initDiagnosticMessage = `Initialized with Application Default Credentials for project "${projectId}".`;
+      } catch (err: any) {
+        initDiagnosticMessage = `ADC initialization failed: ${err.message}`;
+        console.error(`[Firebase Admin] ${initDiagnosticMessage}`);
+      }
     }
   } else {
     adminApp = existingApps[0];
     isFirebaseAdminInitialized = true;
+    initDiagnosticMessage = 'Reusing existing Firebase Admin instance.';
   }
 
   if (adminApp) {
     firestoreInstance = getFirestore(adminApp);
     authInstance = getAuth(adminApp);
+    isFirebaseAdminInitialized = true;
   }
 } catch (error) {
-  console.warn('[Firebase Admin] Running in resilient mode:', (error as Error).message);
+  initDiagnosticMessage = `Firebase Admin initialization exception: ${(error as Error).message}`;
+  console.error('[Firebase Admin] Startup Exception:', initDiagnosticMessage);
 }
 
 // Fallback proxy to prevent runtime crashes if firestore connection is unconfigured
@@ -136,6 +166,16 @@ const authProxy: any = new Proxy(
     },
   }
 );
+
+export function getFirebaseDiagnostics() {
+  return {
+    isInitialized: isFirebaseAdminInitialized,
+    credentialStatus,
+    diagnosticMessage: initDiagnosticMessage,
+    hasFirestore: Boolean(firestoreInstance),
+    hasAuth: Boolean(authInstance),
+  };
+}
 
 export const firestore: Firestore = firestoreProxy;
 export const adminAuth: Auth = authProxy;

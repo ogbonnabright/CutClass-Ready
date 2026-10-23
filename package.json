@@ -5,11 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
-    "start": "node server.ts",
+    "build:client": "vite build",
+    "build:server": "esbuild server.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=dist-server/server.js",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=dist-server/server.js",
+    "start": "node dist-server/server.js",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

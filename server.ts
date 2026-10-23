@@ -1,11 +1,12 @@
 import express, { Request, Response } from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { dbService } from './server/db';
 import { authMiddleware, requireAuth, requireRole, AuthenticatedRequest } from './server/authMiddleware';
 import { paystackService } from './server/paystack';
+import { getFirebaseDiagnostics } from './server/firebaseAdmin';
 
 dotenv.config();
 
@@ -23,14 +24,47 @@ app.use(
 );
 app.use(authMiddleware as any);
 
+export function getServerPort(): number {
+  // 1. Check CLI arguments (e.g. npm run dev --port 3000)
+  const portArgIndex = process.argv.indexOf('--port');
+  if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
+    const parsed = Number(process.argv[portArgIndex + 1]);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  // 2. In development (AI Studio preview runner), dev server runs on port 3000
+  if (process.env.NODE_ENV !== 'production' && !process.env.K_SERVICE) {
+    return 3000;
+  }
+  // 3. In production container (Cloud Run), listen on process.env.PORT or default 3000
+  return Number(process.env.PORT) || 3000;
+}
+
+export function getServerHost(): string {
+  const hostArgIndex = process.argv.indexOf('--host');
+  if (hostArgIndex !== -1 && process.argv[hostArgIndex + 1]) {
+    return process.argv[hostArgIndex + 1];
+  }
+  return process.env.HOST || '0.0.0.0';
+}
+
 // ============================================================================
 // 1. HEALTH & SYSTEM STATUS
 // ============================================================================
 app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({
-    status: 'ok',
+  const firebaseDiag = getFirebaseDiagnostics();
+  const isHealthy = firebaseDiag.isInitialized && (firebaseDiag.hasFirestore || process.env.NODE_ENV !== 'production');
+
+  res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? 'ok' : 'degraded',
     service: 'CutClass Production Booking Engine',
     timestamp: new Date().toISOString(),
+    port: getServerPort(),
+    environment: process.env.NODE_ENV || 'development',
+    firebase: {
+      status: firebaseDiag.isInitialized ? 'connected' : 'error',
+      credentialMode: firebaseDiag.credentialStatus,
+      diagnostics: firebaseDiag.diagnosticMessage,
+    },
     paystackConfigured: paystackService.isConfigured(),
   });
 });
@@ -672,24 +706,45 @@ app.post('/api/safety/report', requireAuth, async (req: AuthenticatedRequest, re
 // ============================================================================
 async function startServer() {
   const isProduction = process.env.NODE_ENV === 'production';
+  const PORT = getServerPort();
+  const HOST = getServerHost();
 
   if (!isProduction) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve('dist')));
+    const distPath = path.resolve(process.cwd(), 'dist');
+    if (!fs.existsSync(distPath)) {
+      console.warn(
+        `[CutClass Production Server] Warning: Frontend build directory not found at "${distPath}". Ensure "npm run build" has completed.`
+      );
+    }
+    app.use(express.static(distPath));
     app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.resolve('dist', 'index.html'));
+      const indexPath = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(404).send('CutClass API Server is online. Frontend client build not found.');
+      }
     });
   }
 
-  const PORT = 3000;
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`CutClass Server listening on port ${PORT}`);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`CutClass Server listening on ${HOST}:${PORT} [${process.env.NODE_ENV || 'development'}]`);
+    const diag = getFirebaseDiagnostics();
+    console.log(`[Diagnostic] Firebase Admin: ${diag.credentialStatus} - ${diag.diagnosticMessage}`);
+    console.log(`[Diagnostic] Paystack: ${paystackService.isConfigured() ? 'Configured' : 'Sandbox/Test Mode'}`);
   });
+
+  return server;
 }
 
 startServer().catch((err) => {
